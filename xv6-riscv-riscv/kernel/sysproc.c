@@ -63,7 +63,7 @@ sys_schedinfo(void)
             si.ctime = p->ctime;
             si.ftime = p->ftime;
             si.firstcpu = p->firstcpu;
-
+si.affinity=p->affinity; //Q4
             release(&p->lock);
 
             if (copyout(cur->pagetable, cur->sz, addr,
@@ -221,4 +221,95 @@ sys_forkwatch(void)
   forkwatch_enabled = (on != 0);
 
   return old;
+}
+
+uint64
+sys_sched_setaffinity(void)
+{
+    int pid, mask;
+    struct proc *p = 0;
+
+    argint(0, &pid);
+    argint(1, &mask);
+
+    // Mask must allow at least one booted hart.
+    if (mask == 0)
+        return -1;
+
+    if ((mask & __atomic_load_n(&booted_harts, __ATOMIC_RELAXED)) == 0)
+        return -1;
+
+    // PID 0 means the calling process.
+    if (pid == 0) {
+        p = myproc();
+        acquire(&p->lock);
+    }
+    else {
+        // Find the process and acquire its lock.
+        for (struct proc *q = proc; q < &proc[NPROC]; q++) {
+            acquire(&q->lock);
+
+            if (q->pid == pid && q->state != UNUSED) {
+                p = q;
+                break;
+            }
+
+            release(&q->lock);
+        }
+    }
+
+    if (p == 0)
+        return -1;
+
+    // We already hold p->lock here.
+    p->affinity = mask;
+
+    int running_here = (p == myproc() &&
+                        !(mask & (1 << cpuid())));
+
+    release(&p->lock);
+
+    // If we excluded our current hart, give up the CPU.
+    if (running_here)
+        yield();
+
+    return 0;
+}
+
+uint64
+sys_sched_getaffinity(void)
+{
+    int pid;
+    struct proc *p = 0;
+
+    argint(0, &pid);
+
+    // PID 0 means the calling process.
+    if (pid == 0) {
+        p = myproc();
+        acquire(&p->lock);
+    }
+    else {
+        // Find the process and acquire its lock.
+        for (struct proc *q = proc; q < &proc[NPROC]; q++) {
+            acquire(&q->lock);
+
+            if (q->pid == pid && q->state != UNUSED) {
+                p = q;
+                break;
+            }
+
+            release(&q->lock);
+        }
+    }
+
+    if (p == 0)
+        return -1;
+
+    // Read affinity while holding the lock.
+    int mask = p->affinity;
+
+    release(&p->lock);
+
+    return mask;
 }
