@@ -90,11 +90,14 @@ usertrap(void)
     //q2
     p->used ++;
 
-    if(p->used >= p->slice)
+int disallowed;
 
+acquire(&p->lock);
+disallowed = !(p->affinity & (1 << cpuid()));
+release(&p->lock);
 
-      {yield();
-      }
+if (p->used >= p->slice || disallowed)
+  yield();
   }
   prepare_return();
   
@@ -166,17 +169,28 @@ kerneltrap()
   }
 
   // give up the CPU if this is a timer interrupt.
-  if (which_dev == 2 && myproc() != 0)
-  {myproc()->rticks++;
-    myproc()->used ++;
-    if (myproc()->used >= myproc()->slice){
-    yield();}
-  }
-  // the yield() may have caused some traps to occur,
-  // so restore trap registers for use by kernelvec.S's sepc instruction.
-  w_sepc(sepc);
-  w_sstatus(sstatus);
+if (which_dev == 2 && myproc() != 0) {
+    struct proc *p = myproc();
+
+    p->rticks++;
+    p->used++;
+
+    int disallowed;
+
+    acquire(&p->lock);
+    disallowed = !(p->affinity & (1 << cpuid()));
+    release(&p->lock);
+
+    if (p->used >= p->slice || disallowed) {
+        yield();
+    }
 }
+
+// KEEP THESE TWO LINES!
+w_sepc(sepc);
+w_sstatus(sstatus);
+}
+
 
 void
 clockintr()

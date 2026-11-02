@@ -13,6 +13,8 @@ struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
 
+int booted_harts = 0;
+
 struct proc *initproc;
 
 int nextpid = 1;
@@ -35,6 +37,16 @@ struct spinlock wait_lock;
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
+void
+update_init_affinity(void)
+{
+    if (initproc != 0) {
+        acquire(&initproc->lock);
+        initproc->affinity =
+            __atomic_load_n(&booted_harts, __ATOMIC_RELAXED);
+        release(&initproc->lock);
+    }
+}
 void
 proc_mapstacks(pagetable_t kpgtbl)
 {
@@ -145,6 +157,9 @@ found:
   p->ftime = 0;
   p->firstcpu = -1;
 
+//Q4
+p->affinity = __atomic_load_n(&booted_harts, __ATOMIC_RELAXED);
+
 
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
@@ -244,6 +259,8 @@ userinit(void)
   p = allocproc();
   initproc = p;
 
+p->affinity = __atomic_load_n(&booted_harts, __ATOMIC_RELAXED);
+
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
@@ -318,13 +335,15 @@ kfork(void)
   np->parent = p;
   release(&wait_lock);
 
-  acquire(&p->lock);
-  parent_slice = p->slice;
-  release(&p->lock);
+acquire(&p->lock);
+parent_slice = p->slice;
+int parent_affinity = p->affinity;
+release(&p->lock);
 
-  acquire(&np->lock);
-  np->slice = parent_slice;
-  np->used = 0;
+acquire(&np->lock);
+np->slice = parent_slice;
+np->used = 0;
+np->affinity = parent_affinity;
 
   acquire(&tickslock);
   np->ctime = ticks;
@@ -477,7 +496,7 @@ scheduler(void)
     int found = 0;
     for (p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
-      if (p->state == RUNNABLE) {
+if (p->state == RUNNABLE && (p->affinity & (1 << cpuid()))) {
 
         p->nsched++;
         p->lastcpu= cpuid();

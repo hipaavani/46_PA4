@@ -100,7 +100,11 @@ struct proc {
   //Q3
   int ctime;
   int ftime;
-  int firstcpu;
+int firstcpu;
+
+
+//Q4
+int affinity;
 
   // wait_lock must be held when using this:
   struct proc *parent; // Parent process
