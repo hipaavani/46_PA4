@@ -82,10 +82,25 @@ usertrap(void)
     kexit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if (which_dev == 2)
-    yield();
+  if (which_dev == 2){
 
+  //Q1. 
+    p->rticks++;
+
+    //q2
+    p->used ++;
+
+int disallowed;
+
+acquire(&p->lock);
+disallowed = !(p->affinity & (1 << cpuid()));
+release(&p->lock);
+
+if (p->used >= p->slice || disallowed)
+  yield();
+  }
   prepare_return();
+  
 
   // the user page table to switch to, for trampoline.S
   uint64 satp = MAKE_SATP(p->pagetable);
@@ -154,14 +169,28 @@ kerneltrap()
   }
 
   // give up the CPU if this is a timer interrupt.
-  if (which_dev == 2 && myproc() != 0)
-    yield();
+if (which_dev == 2 && myproc() != 0) {
+    struct proc *p = myproc();
 
-  // the yield() may have caused some traps to occur,
-  // so restore trap registers for use by kernelvec.S's sepc instruction.
-  w_sepc(sepc);
-  w_sstatus(sstatus);
+    p->rticks++;
+    p->used++;
+
+    int disallowed;
+
+    acquire(&p->lock);
+    disallowed = !(p->affinity & (1 << cpuid()));
+    release(&p->lock);
+
+    if (p->used >= p->slice || disallowed) {
+        yield();
+    }
 }
+
+// KEEP THESE TWO LINES!
+w_sepc(sepc);
+w_sstatus(sstatus);
+}
+
 
 void
 clockintr()

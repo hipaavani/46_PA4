@@ -41,5 +41,9 @@ main()
     plicinithart(); // ask PLIC for device interrupts
   }
 
-  scheduler();
+__atomic_fetch_or(&booted_harts, 1 << cpuid(), __ATOMIC_RELAXED);
+
+update_init_affinity();
+
+scheduler();
 }

@@ -6,9 +6,14 @@
 #include "proc.h"
 #include "defs.h"
 
+int forkwatch_enabled = 0;
+
+
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
+
+int booted_harts = 0;
 
 struct proc *initproc;
 
@@ -20,6 +25,9 @@ static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
 
+extern uint ticks;
+extern struct spinlock tickslock;
+
 // helps ensure that wakeups of wait()ing
 // parents are not lost. helps obey the
 // memory model when using p->parent.
@@ -29,6 +37,16 @@ struct spinlock wait_lock;
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
+void
+update_init_affinity(void)
+{
+    if (initproc != 0) {
+        acquire(&initproc->lock);
+        initproc->affinity =
+            __atomic_load_n(&booted_harts, __ATOMIC_RELAXED);
+        release(&initproc->lock);
+    }
+}
 void
 proc_mapstacks(pagetable_t kpgtbl)
 {
@@ -124,6 +142,24 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+
+  //Q1
+  p->nsched=0;
+  p->rticks=0;
+  p->lastcpu=0;
+
+  //Q2
+  p->slice = 1;
+  p->used = 0;
+
+  //Q3
+  p->ctime = 0;
+  p->ftime = 0;
+  p->firstcpu = -1;
+
+//Q4
+p->affinity = __atomic_load_n(&booted_harts, __ATOMIC_RELAXED);
+
 
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
@@ -223,6 +259,8 @@ userinit(void)
   p = allocproc();
   initproc = p;
 
+p->affinity = __atomic_load_n(&booted_harts, __ATOMIC_RELAXED);
+
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
@@ -258,7 +296,7 @@ growproc(int n)
 int
 kfork(void)
 {
-  int i, pid;
+  int i, pid, parent_slice;
   struct proc *np;
   struct proc *p = myproc();
 
@@ -297,8 +335,22 @@ kfork(void)
   np->parent = p;
   release(&wait_lock);
 
-  acquire(&np->lock);
+acquire(&p->lock);
+parent_slice = p->slice;
+int parent_affinity = p->affinity;
+release(&p->lock);
+
+acquire(&np->lock);
+np->slice = parent_slice;
+np->used = 0;
+np->affinity = parent_affinity;
+
+  acquire(&tickslock);
+  np->ctime = ticks;
+  release(&tickslock);
+
   np->state = RUNNABLE;
+  
   release(&np->lock);
 
   return pid;
@@ -444,12 +496,16 @@ scheduler(void)
     int found = 0;
     for (p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
-      if (p->state == RUNNABLE) {
+if (p->state == RUNNABLE && (p->affinity & (1 << cpuid()))) {
+
+        p->nsched++;
+        p->lastcpu= cpuid();
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        p->used = 0;
         swtch(&c->context, &p->context);
 
         // Don't re-enable interrupts on release.
@@ -511,13 +567,32 @@ yield(void)
 // will swtch to forkret.
 void
 forkret(void)
+
 {
   extern char userret[];
   static int first = 1;
   struct proc *p = myproc();
+  int print_first = 0;
+  int waited = 0;
 
   // Still holding p->lock from scheduler.
+ if (p->ftime == 0) {
+    acquire(&tickslock);
+    p->ftime = ticks;
+    release(&tickslock);
+
+    p->firstcpu = cpuid();
+    waited = p->ftime - p->ctime;
+    print_first = 1;
+}
+
   release(&p->lock);
+
+  if (print_first && forkwatch_enabled) {
+    printk("pid %d: first run on hart %d, %d ticks after fork\n",
+            p->pid, p->firstcpu, waited);
+    }
+
 
   if (first) {
     first = 0;

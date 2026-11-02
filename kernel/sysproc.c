@@ -6,7 +6,9 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "vm.h"
+#include "schedinfo.h"
 
+extern struct proc proc[NPROC];
 uint64
 sys_exit(void)
 {
@@ -21,6 +23,101 @@ sys_getpid(void)
 {
   return myproc()->pid;
 }
+
+//Q1
+uint64
+sys_getcpu(void)
+{
+  push_off();
+  int id= cpuid();
+  pop_off();
+
+  return id;
+}
+
+uint64
+sys_schedinfo(void)
+{
+    int pid;
+    uint64 addr;
+
+    argint(0, &pid);
+    argaddr(1, &addr);
+
+    struct proc *p;
+    struct proc *cur = myproc();
+    struct schedinfo si;
+
+    memset(&si, 0, sizeof(si));
+
+    for (p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+
+        if (p->pid == pid && p->state != UNUSED) {
+            si.pid = p->pid;
+            si.state = p->state;
+            si.nsched = p->nsched;
+            si.rticks = p->rticks;
+            si.lastcpu = p->lastcpu;
+            si.slice = p->slice;
+            si.ctime = p->ctime;
+            si.ftime = p->ftime;
+            si.firstcpu = p->firstcpu;
+si.affinity=p->affinity; //Q4
+            release(&p->lock);
+
+            if (copyout(cur->pagetable, cur->sz, addr,
+            (char *)&si, sizeof(si)) < 0)
+    return -1;
+
+            return 0;
+        }
+
+        release(&p->lock);
+    }
+
+    return -1;
+}
+
+uint64
+sys_setslice(void)
+{
+  int pid, n;
+  struct proc *p;
+
+  argint(0, &pid);
+  argint(1, &n);
+
+  // Validate time slice
+  if (n < 1 || n > 100)
+    return -1;
+
+  // PID 0 means the calling process
+  if (pid == 0) {
+    p = myproc();
+    acquire(&p->lock);
+    p->slice = n;
+    p->used = 0;
+    release(&p->lock);
+    return 0;
+  }
+
+  // Otherwise, find the process with the given PID
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+
+    if (p->pid == pid && p->state != UNUSED) {
+      p->slice = n;
+      p->used = 0;
+      release(&p->lock);
+      return 0;
+    }
+
+    release(&p->lock);
+  }
+
+  return -1;
+} 
 
 uint64
 sys_fork(void)
@@ -109,4 +206,110 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+//Q3
+extern int forkwatch_enabled;
+
+uint64
+sys_forkwatch(void)
+{
+  int on;
+  int old = forkwatch_enabled;
+
+  argint(0, &on);
+  forkwatch_enabled = (on != 0);
+
+  return old;
+}
+
+uint64
+sys_sched_setaffinity(void)
+{
+    int pid, mask;
+    struct proc *p = 0;
+
+    argint(0, &pid);
+    argint(1, &mask);
+
+    // Mask must allow at least one booted hart.
+    if (mask == 0)
+        return -1;
+
+    if ((mask & __atomic_load_n(&booted_harts, __ATOMIC_RELAXED)) == 0)
+        return -1;
+
+    // PID 0 means the calling process.
+    if (pid == 0) {
+        p = myproc();
+        acquire(&p->lock);
+    }
+    else {
+        // Find the process and acquire its lock.
+        for (struct proc *q = proc; q < &proc[NPROC]; q++) {
+            acquire(&q->lock);
+
+            if (q->pid == pid && q->state != UNUSED) {
+                p = q;
+                break;
+            }
+
+            release(&q->lock);
+        }
+    }
+
+    if (p == 0)
+        return -1;
+
+    // We already hold p->lock here.
+    p->affinity = mask;
+
+    int running_here = (p == myproc() &&
+                        !(mask & (1 << cpuid())));
+
+    release(&p->lock);
+
+    // If we excluded our current hart, give up the CPU.
+    if (running_here)
+        yield();
+
+    return 0;
+}
+
+uint64
+sys_sched_getaffinity(void)
+{
+    int pid;
+    struct proc *p = 0;
+
+    argint(0, &pid);
+
+    // PID 0 means the calling process.
+    if (pid == 0) {
+        p = myproc();
+        acquire(&p->lock);
+    }
+    else {
+        // Find the process and acquire its lock.
+        for (struct proc *q = proc; q < &proc[NPROC]; q++) {
+            acquire(&q->lock);
+
+            if (q->pid == pid && q->state != UNUSED) {
+                p = q;
+                break;
+            }
+
+            release(&q->lock);
+        }
+    }
+
+    if (p == 0)
+        return -1;
+
+    // Read affinity while holding the lock.
+    int mask = p->affinity;
+
+    release(&p->lock);
+
+    return mask;
 }

@@ -25,6 +25,13 @@ char *sys_sbrk(int, int);
 int pause(int);
 int uptime(void);
 int sync(void);
+struct schedinfo;
+int getcpu(void);
+int schedinfo(int pid, struct schedinfo *si);
+int setslice(int pid, int n);
+int forkwatch(int on);
+int sched_setaffinity(int pid, int mask);
+int sched_getaffinity(int pid);
 
 // ulib.c
 int stat(const char *, struct stat *);

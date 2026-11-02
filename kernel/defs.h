@@ -142,7 +142,9 @@ void            syscall();
 extern uint     ticks;
 void            trapinit(void);
 void            trapinithart(void);
+extern int booted_harts;
 extern struct spinlock tickslock;
+void update_init_affinity(void);
 void            prepare_return(void);
 
 // uart.c
