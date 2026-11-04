@@ -106,6 +106,9 @@ int firstcpu;
 //Q4
 int affinity;
 
+// Q5
+int priority;
+
   // wait_lock must be held when using this:
   struct proc *parent; // Parent process
 
